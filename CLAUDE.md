@@ -11,41 +11,41 @@ A todo list application that uses SQlite database to store each user authenticat
 
 # Implementation
 
-**Stack:** React + Vite (frontend), Node.js + Express (backend), SQLite via `better-sqlite3` (database).
+**Stack:** React + Vite (frontend), Node.js + Express (backend), Postgres via `pg` (database). Note: deviates from the SQLite rule above — switched to Postgres because the app targets Vercel, whose serverless functions have an ephemeral filesystem that SQLite can't persist to.
 
 **Structure:**
-- `server/` — Express API
-  - `db.js` — opens `todos.sqlite`, creates `users` and `todos` tables on startup
-  - `index.js` — routes, session middleware, auth
+- `server/app.js` — Express app (routes, middleware, auth) — exported, no listener
+- `server/index.js` — local dev entry point, calls `app.listen`
+- `server/db.js` — Postgres pool (`POSTGRES_URL`/`DATABASE_URL`), creates `users` and `todos` tables on startup
+- `api/index.js` — Vercel serverless entry point, re-exports `server/app.js`
+- `vercel.json` — build/install commands for the client, and rewrites so `/api/*` hits the one serverless function and all other paths fall back to `index.html`
 - `client/` — React app (Vite)
-  - `src/App.jsx` — checks session on load, shows `AuthForm` or the todo list
+  - `src/App.jsx` — checks auth on load, shows `AuthForm` or the todo list
   - `src/AuthForm.jsx` — login/signup form
   - `src/api.js` — fetch wrapper for `/api/auth/*` and `/api/todos` endpoints
 
 **Auth:**
 - Passwords hashed with `bcryptjs`, stored in `users` table (`email UNIQUE`, `password_hash`)
-- Session-based login via `express-session`, httpOnly cookie (`SESSION_SECRET` env var overrides the dev default)
-- `requireAuth` middleware guards all `/api/todos` routes — returns `401` if no active session
-- Frontend sends `credentials: 'include'` on every request so the session cookie is attached
+- Stateless JWT auth (`jsonwebtoken`) in an httpOnly cookie (`JWT_SECRET` env var overrides the dev default) — chosen over session storage so auth works across independent serverless invocations with no shared session store
+- `requireAuth` middleware guards all `/api/todos` routes — returns `401` if the cookie is missing/invalid
+- Frontend sends `credentials: 'include'` on every request so the cookie is attached
 
 **Per-user task isolation:**
 - `todos` table has a `user_id` column referencing `users.id`
-- Every todo query (`GET`, `POST`, `PATCH`, `DELETE`) is scoped with `WHERE user_id = ?` using the ID from `req.session.userId` — a user can never read or modify another user's rows, even by guessing an `id`
+- Every todo query (`GET`, `POST`, `PATCH`, `DELETE`) is scoped with `WHERE user_id = $1` using the ID decoded from the JWT — a user can never read or modify another user's rows, even by guessing an `id`
 
 **Auth API:**
-- `POST /api/auth/signup` — `{ email, password }`, creates user, starts session
-- `POST /api/auth/login` — `{ email, password }`, starts session
-- `POST /api/auth/logout` — destroys session
+- `POST /api/auth/signup` — `{ email, password }`, creates user, sets auth cookie
+- `POST /api/auth/login` — `{ email, password }`, sets auth cookie
+- `POST /api/auth/logout` — clears auth cookie
 - `GET /api/auth/me` — returns current user or `401`
 
-**Todo API (all require an active session):**
+**Todo API (all require a valid auth cookie):**
 - `GET /api/todos` — list the current user's todos
 - `POST /api/todos` — `{ text }`
 - `PATCH /api/todos/:id` — `{ completed }`
 - `DELETE /api/todos/:id`
 
-**Run locally:**
-```
-cd server && npm install && npm start   # http://localhost:3001
-cd client && npm install && npm run dev # http://localhost:5173 (proxies /api to :3001)
-```
+**Run locally:** see README.md.
+
+**Deploy:** single Vercel project (static frontend + `/api` serverless function) backed by Vercel Postgres/Neon — see README.md for setup steps.
